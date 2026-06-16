@@ -745,14 +745,11 @@ The receiver's `GET /metadata` response must declare Task support:
 
 Tasks are managed by a **dedicated Task Service** — a discrete, independently deployable microservice, architecturally similar to the Endpoint Catalogue (EPC). It owns its own data store, exposes FHIR R4 operations via the BaRS Proxy, and has no direct dependency on the Referral Service or e-RS.
 
-### Architecture
+For full architectural detail (data store design, component breakdown, event integration, observability, DR, and deployment), see the dedicated **[Task Service Architecture](./task-service-architecture.md)** document.
+
+### Summary
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                          Consumer                                     │
-└──────────────────────────────┬──────────────────────────────────────┘
-                               │  FHIR R4 (GET /Task, POST /Task, etc.)
-                               ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │                       BaRS Proxy (Transport)                         │
 │              Routes requests based on resource type                   │
@@ -761,136 +758,17 @@ Tasks are managed by a **dedicated Task Service** — a discrete, independently 
            ▼                   ▼                   ▼
 ┌──────────────────┐ ┌──────────────────┐ ┌──────────────────┐
 │ Referral Service │ │  Task Service    │ │ Endpoint         │
-│                  │ │  (NEW)           │ │ Catalogue (EPC)  │
-│ /ServiceRequest  │ │  /Task           │ │ /Endpoint        │
-│ /Slot            │ │                  │ │ /Organization    │
-│ /Appointment     │ │  Own data store  │ │                  │
-│                  │ │  Own deployment  │ │  Own data store  │
-│  DynamoDB        │ │  Own lifecycle   │ │  Own deployment  │
+│ /ServiceRequest  │ │  /Task           │ │ Catalogue (EPC)  │
+│ /Slot            │ │                  │ │ /Endpoint        │
+│ /Appointment     │ │  DynamoDB        │ │ /Organization    │
 └──────────────────┘ └──────────────────┘ └──────────────────┘
 ```
 
-### Why a Separate Service (Like EPC)
-
-| Reason | Detail |
-|---|---|
-| **Independent scaling** | Task query volume will be high (every org polls for their task queue); needs to scale independently of referral reads/writes |
-| **Independent deployment** | Task Service can be updated, patched, and deployed without affecting referral or booking flows |
-| **Clear ownership** | Single team owns the Task Service end-to-end (build, run, support) — same model as EPC |
-| **Different access patterns** | Tasks are queried by owner (org worklist), patient (NHS App), and focus (referral). These patterns differ from ServiceRequest query patterns and benefit from dedicated indexes |
-| **Simpler blast radius** | A Task Service outage doesn't affect the ability to create referrals or book appointments |
-| **Reusable beyond referrals** | The Task Service can support tasks for other BaRS use cases (e.g., 111-to-ED handover tasks, A&G response tasks) without coupling to the Referral Service |
-
-### Comparison with EPC
-
-| Aspect | Task Service | Endpoint Catalogue (EPC) |
-|---|---|---|
-| **Purpose** | Store and serve FHIR Task resources | Store and serve endpoint/service metadata |
-| **Data model** | FHIR R4 Task (JSON documents) | Endpoint, Organization, HealthcareService |
-| **Storage** | DynamoDB | DynamoDB |
-| **API style** | FHIR R4 RESTful (search, read, create, update, patch) | FHIR R4 RESTful (search, read, create, update) |
-| **Auth** | App-restricted (signed JWT) | App-restricted (signed JWT) + CIS2 for admin |
-| **Infrastructure** | AWS Lambda or ECS Fargate, API Gateway, DynamoDB | AWS Lambda, API Gateway, DynamoDB |
-| **Observability** | CloudWatch / ODIN (same patterns as EPC) | CloudWatch / ODIN |
-| **Deployment** | Terraform, CI/CD pipeline | Terraform, CI/CD pipeline |
-| **Proxy integration** | BaRS Proxy routes `/Task` requests to this service | BaRS Proxy routes service discovery requests to EPC |
-
-### Data Store Design
-
-The Task Service uses DynamoDB with the following table and index design:
-
-**Primary Table: `bars-tasks`**
-
-| Attribute | Type | Role |
-|---|---|---|
-| `id` | String (UUID) | Partition key |
-| `version` | Number | Sort key (for version history) |
-| `resource` | JSON | Full FHIR Task resource |
-| `owner_ods` | String | Extracted for GSI |
-| `patient_nhs_number` | String | Extracted for GSI |
-| `focus_id` | String | Extracted for GSI |
-| `status` | String | Extracted for GSI |
-| `last_modified` | String (ISO 8601) | Extracted for GSI |
-| `authored_on` | String (ISO 8601) | Extracted for GSI |
-| `code` | String | Extracted for GSI |
-
-**Global Secondary Indexes:**
-
-| GSI | Partition Key | Sort Key | Purpose |
-|---|---|---|---|
-| **task-by-owner-status** | `owner_ods` | `last_modified` (DESC) | Org task queue — "show me my active tasks" |
-| **task-by-patient** | `patient_nhs_number` | `last_modified` (DESC) | Patient's task list (NHS App / Wayfinder) |
-| **task-by-focus** | `focus_id` | `authored_on` | All tasks for a given referral |
-| **task-by-owner-code** | `owner_ods` + `code` (composite) | `last_modified` (DESC) | Filtered task queue — "show me triage tasks" |
-
-### Service Components
-
-```
-task-service/
-├── api/
-│   ├── routes/
-│   │   ├── search-task.ts          # GET /Task (search)
-│   │   ├── read-task.ts            # GET /Task/{id}
-│   │   ├── create-task.ts          # POST /Task
-│   │   ├── update-task.ts          # PUT /Task/{id}
-│   │   └── patch-task.ts           # PATCH /Task/{id} (status transitions)
-│   ├── middleware/
-│   │   ├── auth-validator.ts       # JWT validation
-│   │   ├── org-scope-enforcer.ts   # Only see tasks you own or requested
-│   │   └── audit-logger.ts         # Audit trail
-│   └── validators/
-│       ├── task-profile-validator.ts  # BaRS-Task profile validation
-│       └── state-machine.ts           # Enforce valid status transitions
-├── domain/
-│   ├── task-state-machine.ts       # Valid transitions + business rules
-│   ├── orchestration-rules.ts     # Auto-create tasks on events
-│   └── deadline-monitor.ts        # Check for overdue tasks
-├── events/
-│   ├── task-event-publisher.ts    # Publish to MNS on task create/update
-│   └── referral-event-consumer.ts # Listen for ServiceRequest events → auto-create tasks
-├── persistence/
-│   ├── dynamo-repository.ts       # DynamoDB read/write
-│   └── index-extractor.ts        # Extract GSI attributes from FHIR JSON
-└── config/
-    ├── task-codes.json            # Supported task types
-    ├── business-statuses.json     # Valid business statuses per task type
-    └── orchestration-rules.json   # Event → task creation rules
-```
-
-### Event Integration
-
-The Task Service both **produces** and **consumes** events:
-
-**Produces (publishes to MNS):**
-- `task.created` — new task assigned
-- `task.status-changed` — task status transitioned
-- `task.completed` — task finished (with output)
-- `task.overdue` — task passed its deadline
-
-**Consumes (subscribes from Referral Service / other services):**
-- `servicerequest.created` — auto-create triage task
-- `servicerequest.status-changed` — auto-create follow-up tasks
-- `appointment.booked` — auto-create pre-assessment task
-- `appointment.completed` — auto-create outcome/discharge tasks
-
-```
-┌──────────────────┐         ┌─────────────┐         ┌──────────────────┐
-│ Referral Service │──event──▶│     MNS     │──event──▶│  Task Service    │
-│                  │         │             │         │  (auto-creates   │
-│ "referral        │         │             │         │   triage task)   │
-│  created"        │         │             │         └──────────────────┘
-└──────────────────┘         │             │
-                             │             │         ┌──────────────────┐
-┌──────────────────┐         │             │──event──▶│  PAS / Consumer  │
-│  Task Service    │──event──▶│             │         │  (picks up task) │
-│                  │         │             │         └──────────────────┘
-│ "task created"   │         │             │
-│ "task completed" │         │             │         ┌──────────────────┐
-└──────────────────┘         │             │──event──▶│  NHS App /       │
-                             │             │         │  Wayfinder       │
-                             └─────────────┘         │  (patient tasks) │
-                                                     └──────────────────┘
-```
+Key characteristics:
+- **Independent scaling, deployment, and ownership** — same operational model as EPC
+- **DynamoDB storage** — FHIR Task JSON stored as documents with GSIs for owner, patient, focus, and status queries
+- **Event-driven** — consumes events from the Referral Service to auto-create tasks; publishes task lifecycle events to MNS for subscribers
+- **Reusable** — supports tasking for any BaRS use case, not coupled to referrals specifically
 
 ---
 

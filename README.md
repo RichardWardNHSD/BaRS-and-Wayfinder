@@ -20,6 +20,7 @@ The overlap between these two programmes is significant: BaRS defines how referr
 |---|---|
 | [BaRS API and Wayfinder Gap Analysis (PDF)](./BaRS%20API%20Standard%20and%20Wayfinder%20Producer%20Specification%20Gap%20Analysis-v4-20260616_142243.pdf) | Formal gap analysis comparing the BaRS API standard with the Wayfinder Producer Specification — identifies where they align, where they diverge, and what changes are needed |
 | [Adding Tasking via FHIR Task](./bars-tasking-fhir-task.md) | Design for adding `/Task` operations to the BaRS API — enabling workflow tracking, patient-facing tasks, and operational visibility across the referral pathway |
+| [Task Service Architecture](./task-service-architecture.md) | Technical architecture for the Task Service — a discrete microservice (EPC-like) with DynamoDB storage, event integration, observability, and DR |
 
 ---
 
