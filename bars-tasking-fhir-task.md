@@ -153,37 +153,24 @@ The following FHIR R4 RESTful operations would be added to the BaRS API:
 
 BaRS adopts the standard FHIR Task state machine:
 
-```
-                    ┌───────────┐
-                    │  draft    │ (Task created but not yet ready)
-                    └─────┬─────┘
-                          │
-                          ▼
-                    ┌───────────┐
-             ┌──────│ requested │ (Task sent to a potential owner)
-             │      └─────┬─────┘
-             │            │
-             │            ▼
-             │      ┌───────────┐
-             │      │ accepted  │ (Owner acknowledges the task)
-             │      └─────┬─────┘
-             │            │
-             │            ▼
-             │      ┌───────────┐
-             │      │in-progress│ (Owner is actively working on it)
-             │      └─────┬─────┘
-             │            │
-             │     ┌──────┼──────┐
-             │     │      │      │
-             │     ▼      ▼      ▼
-             │  ┌──────┐ ┌──────────┐ ┌────────┐
-             │  │failed│ │completed │ │on-hold │
-             │  └──────┘ └──────────┘ └────────┘
-             │
-             ▼
-       ┌───────────┐
-       │ cancelled │ (Can occur from any non-terminal state)
-       └───────────┘
+```mermaid
+stateDiagram-v2
+    [*] --> draft
+    draft --> requested
+    requested --> accepted
+    requested --> rejected
+    requested --> cancelled
+    accepted --> in_progress : Owner starts work
+    accepted --> cancelled
+    in_progress --> completed : Work done
+    in_progress --> failed : Cannot complete
+    in_progress --> on_hold : Paused
+    in_progress --> cancelled
+    on_hold --> in_progress : Resumed
+    on_hold --> cancelled
+
+    state "in-progress" as in_progress
+    state "on-hold" as on_hold
 ```
 
 ### Status Transitions
@@ -416,27 +403,18 @@ A BaRS-specific code system defines the types of tasks that can be created:
 
 ## How Tasks Relate to Existing BaRS Resources
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    ServiceRequest (Referral)                      │
-│                    "Refer patient to cardiology"                  │
-└──────────────────────────────┬──────────────────────────────────┘
-                               │ focus
-                               │
-         ┌─────────────────────┼─────────────────────┐
-         │                     │                     │
-         ▼                     ▼                     ▼
-┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐
-│  Task: Triage   │  │  Task: Book     │  │  Task: Contact  │
-│  status: done   │  │  status: active │  │  status: ready  │
-│  output: accept │  │  owner: Admin   │  │  owner: Nursing │
-└─────────────────┘  └────────┬────────┘  └─────────────────┘
-                              │ output
-                              ▼
-                     ┌─────────────────┐
-                     │   Appointment    │
-                     │   (Booked)       │
-                     └─────────────────┘
+```mermaid
+graph TD
+    SR["ServiceRequest (Referral)<br/>'Refer patient to cardiology'"]
+    T1["Task: Triage<br/>status: completed<br/>output: accepted"]
+    T2["Task: Book Appointment<br/>status: active<br/>owner: Admin"]
+    T3["Task: Contact Patient<br/>status: ready<br/>owner: Nursing"]
+    APT["Appointment (Booked)"]
+
+    SR --> T1
+    SR --> T2
+    SR --> T3
+    T2 --> APT
 ```
 
 ### Linking Tasks
@@ -677,26 +655,19 @@ A UK Core-aligned profile constraining the FHIR Task resource for BaRS use:
 
 ### Where Task Fits in the BaRS API Surface
 
-```
-BaRS API Operations:
-├── /metadata                     (CapabilityStatement)
-├── /ServiceRequest               (Referrals)
-│   ├── GET    (search/read)
-│   ├── POST   (create)
-│   ├── PUT    (update)
-│   └── PATCH  (partial update)
-├── /Slot                         (Availability)
-│   └── GET    (search)
-├── /Appointment                  (Bookings)
-│   ├── GET    (search/read)
-│   ├── POST   (create)
-│   ├── PUT    (update)
-│   └── PATCH  (partial update)
-└── /Task                         (Tasking) ← NEW
-    ├── GET    (search/read)
-    ├── POST   (create)
-    ├── PUT    (update)
-    └── PATCH  (status transitions)
+```mermaid
+graph LR
+    subgraph BaRS API Operations
+        META["/metadata<br/>(CapabilityStatement)"]
+        subgraph Referral Service
+            SR["/ServiceRequest"]
+            SL["/Slot"]
+            APT["/Appointment"]
+        end
+        subgraph Task Service
+            TSK["/Task ← NEW"]
+        end
+    end
 ```
 
 ### Headers and Auth
@@ -749,19 +720,12 @@ For full architectural detail (data store design, component breakdown, event int
 
 ### Summary
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                       BaRS Proxy (Transport)                         │
-│              Routes requests based on resource type                   │
-└──────────┬───────────────────┬───────────────────┬──────────────────┘
-           │                   │                   │
-           ▼                   ▼                   ▼
-┌──────────────────┐ ┌──────────────────┐ ┌──────────────────┐
-│ Referral Service │ │  Task Service    │ │ Endpoint         │
-│ /ServiceRequest  │ │  /Task           │ │ Catalogue (EPC)  │
-│ /Slot            │ │                  │ │ /Endpoint        │
-│ /Appointment     │ │  DynamoDB        │ │ /Organization    │
-└──────────────────┘ └──────────────────┘ └──────────────────┘
+```mermaid
+graph TD
+    Consumer --> Proxy["BaRS Proxy (Transport)"]
+    Proxy --> RS["Referral Service<br/>/ServiceRequest, /Slot, /Appointment<br/>DynamoDB"]
+    Proxy --> TS["Task Service<br/>/Task<br/>DynamoDB"]
+    Proxy --> EPC["Endpoint Catalogue<br/>/Endpoint, /Organization<br/>DynamoDB"]
 ```
 
 Key characteristics:

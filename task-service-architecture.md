@@ -10,27 +10,13 @@ For the functional design of tasking (use cases, state machine, workflows, code 
 
 ## Architecture Overview
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                          Consumer                                     │
-└──────────────────────────────┬──────────────────────────────────────┘
-                               │  FHIR R4 (GET /Task, POST /Task, etc.)
-                               ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                       BaRS Proxy (Transport)                         │
-│              Routes requests based on resource type                   │
-└──────────┬───────────────────┬───────────────────┬──────────────────┘
-           │                   │                   │
-           ▼                   ▼                   ▼
-┌──────────────────┐ ┌──────────────────┐ ┌──────────────────┐
-│ Referral Service │ │  Task Service    │ │ Endpoint         │
-│                  │ │  (NEW)           │ │ Catalogue (EPC)  │
-│ /ServiceRequest  │ │  /Task           │ │ /Endpoint        │
-│ /Slot            │ │                  │ │ /Organization    │
-│ /Appointment     │ │  Own data store  │ │                  │
-│                  │ │  Own deployment  │ │  Own data store  │
-│  DynamoDB        │ │  Own lifecycle   │ │  Own deployment  │
-└──────────────────┘ └──────────────────┘ └──────────────────┘
+```mermaid
+graph TD
+    Consumer["Consumer"]
+    Consumer -->|"FHIR R4 (GET /Task, POST /Task, etc.)"| Proxy["BaRS Proxy (Transport)<br/>Routes requests based on resource type"]
+    Proxy --> RS["Referral Service<br/>/ServiceRequest<br/>/Slot<br/>/Appointment<br/>DynamoDB"]
+    Proxy --> TS["Task Service (NEW)<br/>/Task<br/>Own data store<br/>Own deployment<br/>Own lifecycle"]
+    Proxy --> EPC["Endpoint Catalogue (EPC)<br/>/Endpoint<br/>/Organization<br/>Own data store<br/>Own deployment"]
 ```
 
 ---
@@ -165,23 +151,13 @@ The Task Service both **produces** and **consumes** events via the Multicast Not
 
 ### Event Flow Diagram
 
-```
-┌──────────────────┐         ┌─────────────┐         ┌──────────────────┐
-│ Referral Service │──event──▶│     MNS     │──event──▶│  Task Service    │
-│                  │         │             │         │  (auto-creates   │
-│ "referral        │         │             │         │   triage task)   │
-│  created"        │         │             │         └──────────────────┘
-└──────────────────┘         │             │
-                             │             │         ┌──────────────────┐
-┌──────────────────┐         │             │──event──▶│  PAS / Consumer  │
-│  Task Service    │──event──▶│             │         │  (picks up task) │
-│                  │         │             │         └──────────────────┘
-│ "task created"   │         │             │
-│ "task completed" │         │             │         ┌──────────────────┐
-└──────────────────┘         │             │──event──▶│  NHS App /       │
-                             │             │         │  Wayfinder       │
-                             └─────────────┘         │  (patient tasks) │
-                                                     └──────────────────┘
+```mermaid
+graph LR
+    RS["Referral Service"] -->|"referral created"| MNS["MNS<br/>(Multicast Notification Service)"]
+    TS["Task Service"] -->|"task created<br/>task completed"| MNS
+    MNS -->|"event"| TS2["Task Service<br/>(auto-creates triage task)"]
+    MNS -->|"event"| PAS["PAS / Consumer<br/>(picks up task)"]
+    MNS -->|"event"| APP["NHS App / Wayfinder<br/>(patient tasks)"]
 ```
 
 ---
